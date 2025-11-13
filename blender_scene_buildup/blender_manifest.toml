@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "blender_scene_buildup"
+version = "1.0.0"
+name = "Scene Buildup Animation"
+tagline = "Create animated scene buildup effects"
+maintainer = "Scene Buildup Team"
+type = "add-on"
+
+tags = ["Animation", "3D View"]
+
+blender_version_min = "4.5.0"
+
+license = [
+    "SPDX:GPL-2.0-or-later",
+]
