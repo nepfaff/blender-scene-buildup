@@ -90,6 +90,36 @@ class SceneBuildupProperties(PropertyGroup):
         unit='LENGTH'
     )
 
+    # Light tool settings
+    light_offset: FloatProperty(
+        name="Offset",
+        description="Distance to offset area light along surface normal",
+        default=0.01,
+        min=0.0,
+        max=1.0,
+        soft_max=0.5,
+        unit='LENGTH'
+    )
+
+    light_intensity: FloatProperty(
+        name="Intensity",
+        description="Light intensity in Watts",
+        default=100.0,
+        min=0.0,
+        soft_max=500.0
+    )
+
+    light_color_temp: EnumProperty(
+        name="Color",
+        description="Light color temperature preset",
+        items=[
+            ('WARM', "Warm White", "Incandescent (yellowish)"),
+            ('NEUTRAL', "Neutral White", "LED neutral white"),
+            ('COOL', "Cool White", "Fluorescent (bluish)"),
+        ],
+        default='WARM'
+    )
+
 
 # ============================================================================
 # Operators
@@ -251,6 +281,61 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
             obj.location.z = original_location_z
             obj.scale = original_scale
 
+        # Hide child lights during animation
+        if props.effect_type in ('GROW_FROM_FLOOR', 'FALL_DOWN'):
+            self._hide_child_lights_during_animation(obj, start_frame, end_frame)
+
+    def _hide_child_lights_during_animation(self, obj, start_frame, end_frame):
+        """Hide child light objects during parent's animation"""
+        for child in obj.children:
+            # Check if child is a light object
+            if child.type == 'LIGHT':
+                # Hide from start until animation ends
+                if start_frame > 0:
+                    # Before animation starts
+                    child.hide_viewport = True
+                    child.hide_render = True
+                    child.keyframe_insert(
+                        data_path="hide_viewport",
+                        frame=start_frame - 1
+                    )
+                    child.keyframe_insert(
+                        data_path="hide_render",
+                        frame=start_frame - 1
+                    )
+
+                # Keep hidden during animation
+                child.hide_viewport = True
+                child.hide_render = True
+                child.keyframe_insert(
+                    data_path="hide_viewport",
+                    frame=start_frame
+                )
+                child.keyframe_insert(
+                    data_path="hide_render",
+                    frame=start_frame
+                )
+                child.keyframe_insert(
+                    data_path="hide_viewport",
+                    frame=end_frame - 1
+                )
+                child.keyframe_insert(
+                    data_path="hide_render",
+                    frame=end_frame - 1
+                )
+
+                # Show when animation completes
+                child.hide_viewport = False
+                child.hide_render = False
+                child.keyframe_insert(
+                    data_path="hide_viewport",
+                    frame=end_frame
+                )
+                child.keyframe_insert(
+                    data_path="hide_render",
+                    frame=end_frame
+                )
+
 
 class SCENEBUILD_OT_ClearAnimation(Operator):
     """Clear scene buildup animation from all selected objects"""
@@ -273,6 +358,14 @@ class SCENEBUILD_OT_ClearAnimation(Operator):
                 obj.animation_data_clear()
                 cleared_count += 1
 
+            # Clear child light animations
+            for child in obj.children:
+                if child.type == 'LIGHT' and child.animation_data:
+                    child.animation_data_clear()
+                    # Ensure lights are visible after clearing
+                    child.hide_viewport = False
+                    child.hide_render = False
+
             # Reset all properties to defaults
             props.enabled = False
             props.effect_type = 'NONE'
@@ -284,6 +377,270 @@ class SCENEBUILD_OT_ClearAnimation(Operator):
             self.report({'WARNING'}, "No animation data found")
 
         return {'FINISHED'}
+
+
+class SCENEBUILD_OT_AddLightToLamp(Operator):
+    """Create light based on selected vertices in Edit Mode"""
+    bl_idname = "scene_buildup.add_light_to_lamp"
+    bl_label = "Add Light from Vertices"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    light_type: EnumProperty(
+        name="Light Type",
+        items=[
+            ('POINT', "Point", "Omnidirectional point light"),
+            ('AREA', "Area", "Area light with soft shadows"),
+        ],
+        default='POINT'
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'EDIT_MESH' and
+            context.edit_object is not None and
+            context.edit_object.type == 'MESH'
+        )
+
+    def execute(self, context):
+        import bmesh
+        from mathutils import Vector
+
+        obj = context.edit_object
+        props = obj.scene_buildup  # Read settings from PropertyGroup
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        # Get selected vertices
+        selected_verts = [v for v in bm.verts if v.select]
+
+        if not selected_verts:
+            self.report({'WARNING'}, "No vertices selected")
+            return {'CANCELLED'}
+
+        # Calculate bounds in world space
+        matrix_world = obj.matrix_world
+        coords = [matrix_world @ v.co for v in selected_verts]
+
+        min_x = min(co.x for co in coords)
+        max_x = max(co.x for co in coords)
+        min_y = min(co.y for co in coords)
+        max_y = max(co.y for co in coords)
+        min_z = min(co.z for co in coords)
+        max_z = max(co.z for co in coords)
+
+        # Calculate center
+        center = Vector((
+            (min_x + max_x) / 2.0,
+            (min_y + max_y) / 2.0,
+            (min_z + max_z) / 2.0
+        ))
+
+        # Calculate sizes
+        size_x = max(max_x - min_x, 0.1)
+        size_y = max(max_y - min_y, 0.1)
+        size_z = max(max_z - min_z, 0.1)
+
+        # Get average normal from selected faces (if any)
+        selected_faces = [f for f in bm.faces if f.select]
+        avg_normal = None
+
+        if selected_faces:
+            avg_normal = Vector((0, 0, 0))
+            for f in selected_faces:
+                avg_normal += f.normal
+            avg_normal.normalize()
+            # Transform to world space
+            avg_normal = matrix_world.to_3x3() @ avg_normal
+            avg_normal.normalize()
+
+        # Color mapping
+        colors = {
+            'WARM': (1.0, 0.95, 0.8),
+            'NEUTRAL': (1.0, 1.0, 1.0),
+            'COOL': (0.9, 1.0, 1.0),
+        }
+
+        # Create light data
+        light_name = f"{obj.name}_Light"
+        light_data = bpy.data.lights.new(
+            name=light_name,
+            type=self.light_type
+        )
+        light_data.energy = props.light_intensity
+        light_data.color = colors[props.light_color_temp]
+
+        # Configure based on light type
+        if self.light_type == 'AREA':
+            light_data.shape = 'RECTANGLE'
+
+            # Use two largest dimensions from bounding box
+            # Works correctly for any rotation
+            dimensions = sorted([size_x, size_y, size_z], reverse=True)
+            light_data.size = dimensions[0]  # Largest dimension
+            light_data.size_y = dimensions[1]  # Second largest
+        elif self.light_type == 'POINT':
+            # Calculate average radius for soft shadow size
+            avg_radius = (
+                sum((co - center).length for co in coords) / len(coords)
+            )
+            light_data.shadow_soft_size = max(avg_radius, 0.1)
+
+        # Create light object
+        light_obj = bpy.data.objects.new(
+            name=light_name,
+            object_data=light_data
+        )
+        context.collection.objects.link(light_obj)
+
+        # Position light in world space (before parenting)
+        if self.light_type == 'AREA' and avg_normal:
+            # Offset along normal for area lights (uses settings value)
+            light_obj.location = center + (avg_normal * props.light_offset)
+        else:
+            # Point light or no normal: place at center
+            light_obj.location = center
+
+        # Rotate area light to match surface normal
+        if self.light_type == 'AREA' and avg_normal:
+            # Area lights point down their local -Z axis
+            default_dir = Vector((0, 0, -1))
+            rotation_quat = default_dir.rotation_difference(avg_normal)
+            light_obj.rotation_mode = 'QUATERNION'
+            light_obj.rotation_quaternion = rotation_quat
+
+        # Parent light to source mesh (preserves world transform)
+        light_obj.parent = obj
+        light_obj.matrix_parent_inverse = obj.matrix_world.inverted()
+
+        # Sync with parent animation if it exists
+        if (props.enabled and
+            props.effect_type in ('GROW_FROM_FLOOR', 'FALL_DOWN')):
+            start_frame = props.start_frame
+            end_frame = start_frame + props.duration
+
+            # Hide light during parent's animation
+            if start_frame > 0:
+                light_obj.hide_viewport = True
+                light_obj.hide_render = True
+                light_obj.keyframe_insert(
+                    data_path="hide_viewport", frame=start_frame - 1
+                )
+                light_obj.keyframe_insert(
+                    data_path="hide_render", frame=start_frame - 1
+                )
+
+            # Keep hidden during animation
+            light_obj.hide_viewport = True
+            light_obj.hide_render = True
+            light_obj.keyframe_insert(
+                data_path="hide_viewport", frame=start_frame
+            )
+            light_obj.keyframe_insert(
+                data_path="hide_render", frame=start_frame
+            )
+            light_obj.keyframe_insert(
+                data_path="hide_viewport", frame=end_frame - 1
+            )
+            light_obj.keyframe_insert(
+                data_path="hide_render", frame=end_frame - 1
+            )
+
+            # Show when animation completes
+            light_obj.hide_viewport = False
+            light_obj.hide_render = False
+            light_obj.keyframe_insert(
+                data_path="hide_viewport", frame=end_frame
+            )
+            light_obj.keyframe_insert(
+                data_path="hide_render", frame=end_frame
+            )
+
+        msg = f"Created {self.light_type} light from {len(selected_verts)} verts"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
+class SCENEBUILD_OT_ApplyMirrorMaterial(Operator):
+    """Apply mirror material to selected faces in Edit Mode"""
+    bl_idname = "scene_buildup.apply_mirror_material"
+    bl_label = "Apply Mirror Material"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'EDIT_MESH' and
+            context.edit_object is not None and
+            context.edit_object.type == 'MESH'
+        )
+
+    def execute(self, context):
+        import bmesh
+
+        obj = context.edit_object
+
+        # Get or create mirror material
+        mat_name = "Mirror"
+        if mat_name in bpy.data.materials:
+            mirror_mat = bpy.data.materials[mat_name]
+        else:
+            mirror_mat = self.create_mirror_material(mat_name)
+
+        # Ensure material is in object's slots
+        if mirror_mat.name not in obj.data.materials:
+            obj.data.materials.append(mirror_mat)
+
+        # Get material index
+        mat_index = obj.data.materials.find(mirror_mat.name)
+
+        # Get BMesh and assign to selected faces
+        bm = bmesh.from_edit_mesh(obj.data)
+
+        selected_faces = [f for f in bm.faces if f.select]
+        if not selected_faces:
+            self.report({'WARNING'}, "No faces selected")
+            return {'CANCELLED'}
+
+        # Assign material index to selected faces
+        for face in selected_faces:
+            face.material_index = mat_index
+
+        # Update mesh
+        bmesh.update_edit_mesh(obj.data)
+
+        msg = f"Applied mirror material to {len(selected_faces)} face(s)"
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+    def create_mirror_material(self, name):
+        """Create perfect chrome mirror material using Principled BSDF"""
+        mat = bpy.data.materials.new(name=name)
+        mat.use_nodes = True
+
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+
+        # Clear default nodes for clean setup
+        nodes.clear()
+
+        # Create Principled BSDF node
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (0, 0)
+
+        # Create Material Output node
+        output = nodes.new(type='ShaderNodeOutputMaterial')
+        output.location = (300, 0)
+
+        # Configure for perfect chrome mirror
+        bsdf.inputs['Base Color'].default_value = (1.0, 1.0, 1.0, 1.0)
+        bsdf.inputs['Metallic'].default_value = 1.0
+        bsdf.inputs['Roughness'].default_value = 0.0
+        # Specular uses default 0.5 which is correct for mirrors
+
+        # Link shader to output
+        links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+
+        return mat
 
 
 # ============================================================================
@@ -371,6 +728,73 @@ class SCENEBUILD_PT_MainPanel(Panel):
             box = layout.box()
             box.label(text="Enable animation to configure", icon='INFO')
 
+        # Lighting Tools section (always visible)
+        layout.separator()
+        layout.separator()
+        box = layout.box()
+        box.label(text="Lighting Tools:", icon='LIGHT')
+
+        # Only show in Edit Mode with mesh
+        if context.mode == 'EDIT_MESH' and context.edit_object:
+            import bmesh
+            bm = bmesh.from_edit_mesh(context.edit_object.data)
+            vert_count = sum(1 for v in bm.verts if v.select)
+
+            if vert_count > 0:
+                box.label(
+                    text=f"{vert_count} vertices selected",
+                    icon='VERTEXSEL'
+                )
+
+                # Get properties for adjustable settings
+                light_props = context.edit_object.scene_buildup
+
+                # Light settings (adjustable before creating)
+                col = box.column(align=True)
+                col.prop(light_props, "light_intensity")
+                col.prop(light_props, "light_color_temp")
+                col.prop(light_props, "light_offset", slider=True)
+
+                box.separator()
+
+                # Point Light button
+                op = box.operator(
+                    "scene_buildup.add_light_to_lamp",
+                    icon='LIGHT_POINT',
+                    text="Point Light"
+                )
+                op.light_type = 'POINT'
+
+                # Area Light button
+                op = box.operator(
+                    "scene_buildup.add_light_to_lamp",
+                    icon='LIGHT_AREA',
+                    text="Area Light"
+                )
+                op.light_type = 'AREA'
+            else:
+                box.label(text="Select vertices to place light", icon='INFO')
+        else:
+            box.label(text="Enter Edit Mode to use", icon='INFO')
+
+        # Material Tools section (always visible)
+        layout.separator()
+        box = layout.box()
+        box.label(text="Material Tools:", icon='MATERIAL')
+
+        # Only show for mesh in edit mode
+        if context.mode == 'EDIT_MESH' and context.edit_object:
+            box.operator(
+                "scene_buildup.apply_mirror_material",
+                icon='MATSPHERE',
+                text="Apply Mirror to Selected Faces"
+            )
+        else:
+            box.label(
+                text="Enter Edit Mode to use",
+                icon='INFO'
+            )
+
 
 # ============================================================================
 # Registration
@@ -380,6 +804,8 @@ classes = (
     SceneBuildupProperties,
     SCENEBUILD_OT_ApplyAnimation,
     SCENEBUILD_OT_ClearAnimation,
+    SCENEBUILD_OT_AddLightToLamp,
+    SCENEBUILD_OT_ApplyMirrorMaterial,
     SCENEBUILD_PT_MainPanel,
 )
 

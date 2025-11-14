@@ -21,6 +21,32 @@ effects.
    - No animation applied
    - Useful for static objects in the scene
 
+**Note**: Child lights are automatically hidden during parent object animations to
+prevent lighting artifacts during the buildup effect.
+
+### Lighting Tools
+
+1. **Vertex-Based Light Placement**
+   - Create lights from selected vertices in Edit Mode
+   - Automatically sizes and positions lights based on vertex selection
+   - Area lights match selection dimensions and face orientation
+   - Point lights auto-calculate radius from selection size
+   - Configure intensity, color temperature, and offset
+   - Lights automatically sync with parent object animations
+   - Perfect for screens, lamps, and any emissive surfaces
+
+### Material Tools
+
+1. **Apply Mirror Material**
+   - Apply perfect reflective material to selected faces
+   - Works in Edit Mode on mesh objects
+   - Preserves existing materials on non-selected faces
+   - Creates reusable "Mirror" material with:
+     - Metallic: 1.0 (full metal)
+     - Roughness: 0.0 (perfect reflection)
+     - Base color: White (chrome mirror)
+   - **Note**: Reflections visible in Cycles or Eevee with ray tracing enabled
+
 ### Per-Object Configuration
 
 Each object can have independent settings:
@@ -46,7 +72,7 @@ Each object can have independent settings:
 
 ## Usage
 
-### Basic Workflow
+### Animating Objects
 
 1. **Select an Object**
    - Click on the object you want to animate in the 3D viewport
@@ -77,6 +103,69 @@ Each object can have independent settings:
 
 7. **Clear Animation** (Optional)
    - Use the "Clear Animation" button to remove all keyframes from the object
+   - Also clears animations from any child lights and makes them visible
+
+### Using Lighting Tools
+
+1. **Add Vertex-Based Lights**
+   - Select a mesh object (lamp, screen, etc.)
+   - Press `Tab` to enter Edit Mode
+   - Select vertices that define the light area or position:
+     - **For screens/monitors**: Select the face vertices of the screen
+     - **For light bulbs**: Select vertices around the bulb
+     - **For any emissive surface**: Select the surface area
+   - Open the Scene Buildup panel (press `N`, click "Scene Buildup" tab)
+   - Scroll to the "Lighting Tools" section
+   - The panel shows how many vertices are selected
+   - Click **Point Light** or **Area Light** to create that type
+
+2. **Area Light Behavior**
+   - Automatically sized to match the bounding box of selected vertices
+   - Creates a rectangular area light matching selection dimensions
+   - Positioned at the center of selected vertices
+   - Automatically rotated to match face normal (if faces selected)
+   - Offset slightly along normal for realistic light emission
+   - Adjust **Offset** slider before creating
+   - Perfect for screens, panels, and flat light sources
+
+3. **Point Light Behavior**
+   - Positioned at the center of selected vertices
+   - Light radius automatically calculated from selection size
+   - Average distance from center to vertices sets soft shadow radius
+   - Good for bulbs, small light sources, and spherical emitters
+
+4. **Light Settings**
+   - **Intensity**: Light strength
+   - **Color Temp**: WARM (yellowish), NEUTRAL (white), COOL (bluish)
+   - **Offset**: Distance along surface normal for Area lights
+
+5. **Light Animation Synchronization**
+   - Lights created on animated objects automatically sync with parent animation
+   - Lights are hidden during parent's buildup animation (GROW_FROM_FLOOR or FALL_DOWN)
+   - Lights appear when the parent animation completes
+   - Works whether lights are added before or after applying animation
+
+### Using Material Tools
+
+1. **Apply Mirror Material to Faces**
+   - Select a mesh object with mirrors
+   - Press `Tab` to enter Edit Mode
+   - Select the faces that should be reflective (mirror surface)
+   - Open the Scene Buildup panel (press `N`, click "Scene Buildup" tab)
+   - Scroll to the "Material Tools" section
+   - Click **Apply Mirror to Selected Faces**
+   - The material is applied only to selected faces
+   - Other faces keep their existing materials unchanged
+
+2. **Viewing Reflections**
+   - Mirror materials work automatically in **Cycles** render engine
+   - For **Eevee** (default), you must enable ray tracing:
+     1. Go to Render Properties (camera icon in properties panel)
+     2. Under "Ray Tracing", check "Enable Ray Tracing"
+     3. Adjust quality settings if needed (Resolution Scale: 2x recommended)
+   - Switch viewport shading to **Material Preview** or **Rendered** mode
+   - Mirrors need environment to reflect (lights, objects, or world HDRI)
+   - If mirror appears grey, ensure ray tracing is enabled (Eevee) or use Cycles
 
 ### Multi-Object Selection
 
