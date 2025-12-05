@@ -25,6 +25,33 @@ from bpy.types import Operator, Panel, PropertyGroup
 
 
 # ============================================================================
+# Compatibility Helpers
+# ============================================================================
+
+def get_fcurves_collection(action):
+    """Get fcurves collection from action, compatible with Blender 4.x and 5.0+
+
+    Returns the fcurves collection object (supports iteration and .remove())
+    """
+    # Check for legacy action (Blender 5.0 can have both types)
+    if hasattr(action, 'is_action_legacy') and action.is_action_legacy:
+        return action.fcurves
+    # Old Blender versions without is_action_legacy property
+    elif not hasattr(action, 'is_action_legacy') and hasattr(action, 'fcurves'):
+        return action.fcurves
+    # Layered action (Blender 5.0+)
+    elif hasattr(action, 'layers') and action.layers:
+        for layer in action.layers:
+            if hasattr(layer, 'strips') and layer.strips:
+                for strip in layer.strips:
+                    if hasattr(strip, 'channelbags') and strip.channelbags:
+                        for channelbag in strip.channelbags:
+                            if channelbag.fcurves:
+                                return channelbag.fcurves
+    return None
+
+
+# ============================================================================
 # Property Group
 # ============================================================================
 
@@ -185,15 +212,17 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
                     action = obj.animation_data.action
 
                 # Remove existing keyframes for location.z and scale
-                fcurves_to_remove = []
-                for fcurve in action.fcurves:
-                    if fcurve.data_path == "location" and fcurve.array_index == 2:
-                        fcurves_to_remove.append(fcurve)
-                    elif fcurve.data_path == "scale":
-                        fcurves_to_remove.append(fcurve)
+                fcurves = get_fcurves_collection(action)
+                if fcurves:
+                    fcurves_to_remove = []
+                    for fcurve in fcurves:
+                        if fcurve.data_path == "location" and fcurve.array_index == 2:
+                            fcurves_to_remove.append(fcurve)
+                        elif fcurve.data_path == "scale":
+                            fcurves_to_remove.append(fcurve)
 
-                for fcurve in fcurves_to_remove:
-                    action.fcurves.remove(fcurve)
+                    for fcurve in fcurves_to_remove:
+                        fcurves.remove(fcurve)
 
         # Apply animation based on effect type
         if props.effect_type == 'GROW_FROM_FLOOR':
@@ -232,10 +261,12 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
 
             # Set interpolation to Bezier for smooth animation
             if obj.animation_data and obj.animation_data.action:
-                for fcurve in obj.animation_data.action.fcurves:
-                    if fcurve.data_path == "location" or fcurve.data_path == "scale":
-                        for keyframe in fcurve.keyframe_points:
-                            keyframe.interpolation = 'BEZIER'
+                fcurves = get_fcurves_collection(obj.animation_data.action)
+                if fcurves:
+                    for fcurve in fcurves:
+                        if fcurve.data_path == "location" or fcurve.data_path == "scale":
+                            for keyframe in fcurve.keyframe_points:
+                                keyframe.interpolation = 'BEZIER'
 
         elif props.effect_type == 'FALL_DOWN':
             # Effect 2: Fall down - appear at full size above and fall to position
@@ -271,10 +302,12 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
 
             # Set interpolation to Bezier for smooth animation
             if obj.animation_data and obj.animation_data.action:
-                for fcurve in obj.animation_data.action.fcurves:
-                    if fcurve.data_path == "location" and fcurve.array_index == 2:
-                        for keyframe in fcurve.keyframe_points:
-                            keyframe.interpolation = 'BEZIER'
+                fcurves = get_fcurves_collection(obj.animation_data.action)
+                if fcurves:
+                    for fcurve in fcurves:
+                        if fcurve.data_path == "location" and fcurve.array_index == 2:
+                            for keyframe in fcurve.keyframe_points:
+                                keyframe.interpolation = 'BEZIER'
 
         elif props.effect_type == 'NONE':
             # Effect 3: None - just restore original transforms
