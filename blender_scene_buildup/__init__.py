@@ -14,6 +14,7 @@ bl_info = {
 }
 
 import bpy
+import mathutils
 from bpy.props import (
     BoolProperty,
     EnumProperty,
@@ -68,6 +69,11 @@ class SceneBuildupProperties(PropertyGroup):
                 "Object grows from small to large and moves up from floor"
             ),
             (
+                'GROW_OVERSHOOT',
+                "Grow with Overshoot",
+                "Object grows from floor, overshoots target size, then settles back"
+            ),
+            (
                 'FALL_DOWN',
                 "Fall Down",
                 "Object appears above and falls down into final position"
@@ -106,6 +112,22 @@ class SceneBuildupProperties(PropertyGroup):
         soft_min=-5.0,
         soft_max=0.0,
         unit='LENGTH'
+    )
+
+    overshoot_amount: FloatProperty(
+        name="Overshoot Amount",
+        description="How much to overshoot target size (0.15 = 115%)",
+        default=0.15,
+        min=0.01,
+        soft_max=0.5,
+    )
+
+    overshoot_settle_ratio: FloatProperty(
+        name="Settle Ratio",
+        description="Fraction of duration used for the settle-back phase",
+        default=0.2,
+        min=0.05,
+        max=0.5,
     )
 
     fall_height: FloatProperty(
@@ -183,6 +205,8 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
             props.duration = active_props.duration
             props.floor_offset = active_props.floor_offset
             props.fall_height = active_props.fall_height
+            props.overshoot_amount = active_props.overshoot_amount
+            props.overshoot_settle_ratio = active_props.overshoot_settle_ratio
 
             # Apply animation using copied settings
             self._apply_animation_to_object(obj, props)
@@ -268,8 +292,64 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
                             for keyframe in fcurve.keyframe_points:
                                 keyframe.interpolation = 'BEZIER'
 
+        elif props.effect_type == 'GROW_OVERSHOOT':
+            # Effect: Grow from floor with overshoot - scale past target then settle
+
+            # Hide object before animation starts
+            if start_frame > 0:
+                obj.hide_viewport = True
+                obj.hide_render = True
+                obj.keyframe_insert(
+                    data_path="hide_viewport",
+                    frame=start_frame - 1
+                )
+                obj.keyframe_insert(
+                    data_path="hide_render",
+                    frame=start_frame - 1
+                )
+
+            # Show object at animation start
+            obj.hide_viewport = False
+            obj.hide_render = False
+            obj.keyframe_insert(data_path="hide_viewport", frame=start_frame)
+            obj.keyframe_insert(data_path="hide_render", frame=start_frame)
+
+            # Calculate overshoot frame
+            settle_frames = max(1, int(props.duration * props.overshoot_settle_ratio))
+            overshoot_frame = end_frame - settle_frames
+            overshoot_scale = tuple(
+                s * (1.0 + props.overshoot_amount) for s in original_scale
+            )
+
+            # Start keyframes (below floor, scale 0)
+            obj.location.z = props.floor_offset
+            obj.scale = (0.0, 0.0, 0.0)
+            obj.keyframe_insert(data_path="location", index=2, frame=start_frame)
+            obj.keyframe_insert(data_path="scale", frame=start_frame)
+
+            # Overshoot keyframes (original position, overshot scale)
+            obj.location.z = original_location_z
+            obj.scale = overshoot_scale
+            obj.keyframe_insert(data_path="location", index=2, frame=overshoot_frame)
+            obj.keyframe_insert(data_path="scale", frame=overshoot_frame)
+
+            # Settle keyframes (original position, original scale)
+            obj.location.z = original_location_z
+            obj.scale = original_scale
+            obj.keyframe_insert(data_path="location", index=2, frame=end_frame)
+            obj.keyframe_insert(data_path="scale", frame=end_frame)
+
+            # Set interpolation to Bezier for smooth animation
+            if obj.animation_data and obj.animation_data.action:
+                fcurves = get_fcurves_collection(obj.animation_data.action)
+                if fcurves:
+                    for fcurve in fcurves:
+                        if fcurve.data_path == "location" or fcurve.data_path == "scale":
+                            for keyframe in fcurve.keyframe_points:
+                                keyframe.interpolation = 'BEZIER'
+
         elif props.effect_type == 'FALL_DOWN':
-            # Effect 2: Fall down - appear at full size above and fall to position
+            # Effect: Fall down - appear at full size above and fall to position
 
             # Hide object before animation starts
             if start_frame > 0:
@@ -290,12 +370,21 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
             obj.keyframe_insert(data_path="hide_viewport", frame=start_frame)
             obj.keyframe_insert(data_path="hide_render", frame=start_frame)
 
-            obj.location.z = original_location_z + props.fall_height
-            obj.keyframe_insert(data_path="location", index=2, frame=start_frame)
+            # Convert world-Z fall offset to parent-local space
+            world_fall = mathutils.Vector((0, 0, props.fall_height))
+            if obj.parent:
+                inv_rot = obj.parent.matrix_world.to_3x3().inverted()
+                local_fall = inv_rot @ world_fall
+            else:
+                local_fall = world_fall
+
+            original_location = obj.location.copy()
+            obj.location = original_location + local_fall
+            obj.keyframe_insert(data_path="location", frame=start_frame)
 
             # End keyframe (original position, keep full size)
-            obj.location.z = original_location_z
-            obj.keyframe_insert(data_path="location", index=2, frame=end_frame)
+            obj.location = original_location
+            obj.keyframe_insert(data_path="location", frame=end_frame)
 
             # Restore original scale (no scaling animation for fall effect)
             obj.scale = original_scale
@@ -305,7 +394,7 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
                 fcurves = get_fcurves_collection(obj.animation_data.action)
                 if fcurves:
                     for fcurve in fcurves:
-                        if fcurve.data_path == "location" and fcurve.array_index == 2:
+                        if fcurve.data_path == "location":
                             for keyframe in fcurve.keyframe_points:
                                 keyframe.interpolation = 'BEZIER'
 
@@ -315,7 +404,7 @@ class SCENEBUILD_OT_ApplyAnimation(Operator):
             obj.scale = original_scale
 
         # Hide child lights during animation
-        if props.effect_type in ('GROW_FROM_FLOOR', 'FALL_DOWN'):
+        if props.effect_type in ('GROW_FROM_FLOOR', 'GROW_OVERSHOOT', 'FALL_DOWN'):
             self._hide_child_lights_during_animation(obj, start_frame, end_frame)
 
     def _hide_child_lights_during_animation(self, obj, start_frame, end_frame):
@@ -547,7 +636,7 @@ class SCENEBUILD_OT_AddLightToLamp(Operator):
 
         # Sync with parent animation if it exists
         if (props.enabled and
-            props.effect_type in ('GROW_FROM_FLOOR', 'FALL_DOWN')):
+            props.effect_type in ('GROW_FROM_FLOOR', 'GROW_OVERSHOOT', 'FALL_DOWN')):
             start_frame = props.start_frame
             end_frame = start_frame + props.duration
 
@@ -732,6 +821,12 @@ class SCENEBUILD_PT_MainPanel(Panel):
             if props.effect_type == 'GROW_FROM_FLOOR':
                 box.separator()
                 box.prop(props, "floor_offset", slider=True)
+
+            elif props.effect_type == 'GROW_OVERSHOOT':
+                box.separator()
+                box.prop(props, "floor_offset", slider=True)
+                box.prop(props, "overshoot_amount", slider=True)
+                box.prop(props, "overshoot_settle_ratio", slider=True)
 
             elif props.effect_type == 'FALL_DOWN':
                 box.separator()
